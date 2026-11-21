@@ -80,7 +80,9 @@ allow list with usage `TERMINAL_PIN`, and an active card. TTL is 5 minutes.
 **Why it is safe.** This is the *only* way to obtain a session, and a session is the only
 thing that can bind a PAN-unbound format to a card. The returned `bindingMac` is
 `HMAC(bindingKey, "session"‖sessionId‖accountId‖expires)` using a key whose usage is
-`TERMINAL_BINDING` — a key that can never encrypt a PIN block.
+`TERMINAL_BINDING` — a key that can never encrypt a PIN block, and which is held to the same
+client allow-list rule as every other key. Live sessions are capped per client and expired
+sessions are swept, so a terminal credential cannot exhaust memory by opening them.
 
 ---
 
@@ -212,7 +214,9 @@ issue:   {"requestId":"...","accountId":"...","approvalTicket":"sec.officer|<exp
 
 Two-person control: a `SECURITY_OFFICER` mints a 5-minute, single-use ticket whose MAC covers
 `officerId‖accountId‖operation‖expiry`; the `ISSUER` redeems it to read the **already stored**
-PVV.
+PVV. Redemption is recorded, so "single use" is enforced rather than merely documented —
+otherwise one approval would mean "disclose as often as you like for five minutes", which is
+not what a second person's approval buys.
 
 **Why it is safe — and why it is still the sharpest edge in the service.** There is no field
 for a PIN, so the endpoint cannot be used as a chosen-PIN oracle: it can only return the PVV
