@@ -50,6 +50,8 @@ class Hsm(private val clock: () -> Long = System::currentTimeMillis) {
     private val routes = LinkedHashMap<String, Route>()
     private val sessions = HashMap<String, TerminalSession>()
     private val verificationKeyClients = HashMap<String, MutableSet<String>>()
+    /** Approval tickets that have already been redeemed; makes "single use" true, not aspirational. */
+    private val usedTickets = HashSet<String>()
 
     private var keyIntegrityTag: String = keys.integrityTag()
 
@@ -129,6 +131,18 @@ class Hsm(private val clock: () -> Long = System::currentTimeMillis) {
                 "DENY", e.code.name, digest
             )
             throw e
+        } catch (e: Exception) {
+            // Anything else — a malformed body that Jackson refuses, or an unexpected runtime
+            // fault — is still audited and still mapped to a uniform public error. An
+            // exception path that skipped the log would be exactly the "plausibly the service
+            // never saw it" gap the chain exists to close.
+            val d = detail.get()
+            audit.append(
+                requestId, client.id, "$method $path", d?.accountToken ?: accountTokenOf(signed.body),
+                d?.keyIds ?: emptyList(), d?.formats ?: emptyList(),
+                "DENY", "INVALID_REQUEST", digest
+            )
+            throw HsmException(ErrorCode.INVALID_REQUEST, e.javaClass.simpleName)
         } finally {
             detail.remove()
         }
@@ -617,6 +631,15 @@ class Hsm(private val clock: () -> Long = System::currentTimeMillis) {
     private fun approvalMac(officerId: String, accountId: String, operation: String, expires: Long): String =
         Hashing.hmacSha256Hex(approvalKey, "approval\n$officerId\n$accountId\n$operation\n$expires")
 
+    /**
+     * Verifies and *redeems* an approval ticket.
+     *
+     * Redemption is recorded so a ticket really is single use: otherwise "approve once" would
+     * mean "disclose as often as you like within five minutes", which is not what a second
+     * person's approval is supposed to buy. Redeeming happens under the same lock as the
+     * lookup, so two concurrent redemptions of one ticket cannot both succeed.
+     */
+    @Synchronized
     private fun verifyApproval(ticket: String, accountId: String, operation: String) {
         // Ticket format: officerId|expires|mac. The MAC covers officer, account, operation.
         val parts = ticket.split('|')
@@ -627,6 +650,9 @@ class Hsm(private val clock: () -> Long = System::currentTimeMillis) {
         if (!ConstantTime.equals(expected, parts[2])) throw HsmException(ErrorCode.POLICY_DENIED)
         val officer = clients[parts[0]] ?: throw HsmException(ErrorCode.POLICY_DENIED)
         if (officer.role != Role.SECURITY_OFFICER) throw HsmException(ErrorCode.POLICY_DENIED)
+        if (!usedTickets.add(ticket)) throw HsmException(ErrorCode.POLICY_DENIED, "ticket already redeemed")
+        // Opportunistically drop expired tickets so the set cannot grow without bound.
+        usedTickets.removeIf { it.split('|').getOrNull(1)?.toLongOrNull()?.let { e -> clock() > e } ?: true }
     }
 
     companion object {

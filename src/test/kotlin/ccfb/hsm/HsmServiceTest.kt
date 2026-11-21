@@ -175,12 +175,33 @@ class HsmServiceTest {
             IssuePvvRequest("p2", card.accountId, approval.ticket)) as PvvResponse
         assertEquals(card.pvv, resp.pvv)
 
-        // The ticket is bound to the operation: cannot be reused for another account.
+        // The ticket is single use: redeeming it again, even for the same account, fails.
+        val replay = runCatching {
+            e.call(e.issuer, "POST", "/v1/pvv/issue", IssuePvvRequest("p-replay", card.accountId, approval.ticket))
+        }.exceptionOrNull()
+        assertTrue(replay is HsmException && replay.code == ErrorCode.POLICY_DENIED,
+            "an approval ticket must not be reusable")
+
+        // It is also bound to the account, so a fresh ticket for one card cannot read another.
         val other = e.hsm.cards.card(e.cardAes.accountId)
         val reuse = runCatching {
             e.call(e.issuer, "POST", "/v1/pvv/issue", IssuePvvRequest("p3", other.accountId, approval.ticket))
         }.exceptionOrNull()
         assertTrue(reuse is HsmException && reuse.code == ErrorCode.POLICY_DENIED)
+    }
+
+    @Test
+    fun `a malformed body is audited and mapped to a uniform error`() {
+        val e = env()
+        val card = e.hsm.cards.card(e.cardVisa.accountId)
+        val before = e.hsm.audit.size
+        // Valid MAC over a body that is not the shape the operation expects.
+        val body = """{"requestId":"mal","accountId":"${card.accountId}","keyId":123}"""
+        val signed = e.signed(e.issuer, "POST", "/v1/pin/verify", body)
+        val ex = runCatching { e.hsm.call("POST", "/v1/pin/verify", signed) }.exceptionOrNull()
+        assertTrue(ex is HsmException && ex.code == ErrorCode.INVALID_REQUEST)
+        assertTrue(e.hsm.audit.size == before + 1, "a rejected body must still be logged")
+        assertTrue(e.hsm.audit.verifyChain())
     }
 
     @Test
