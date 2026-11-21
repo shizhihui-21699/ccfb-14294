@@ -205,7 +205,15 @@ class Hsm(private val clock: () -> Long = System::currentTimeMillis) {
 
         val sessionId = "S-" + ccfb.hsm.crypto.RandomBytes.hex(16)
         val expires = clock() + SESSION_MS
-        synchronized(sessions) { sessions[sessionId] = TerminalSession(client.id, req.accountId, req.terminalKeyId, expires) }
+        val now = clock()
+        synchronized(sessions) {
+            // Drop expired sessions and cap this client's live sessions. Unbounded session
+            // growth would be a memory-exhaustion path available to any terminal credential.
+            sessions.values.removeIf { now > it.expiresAtMs }
+            val live = sessions.values.count { it.clientId == client.id }
+            if (live >= MAX_SESSIONS_PER_CLIENT) throw HsmException(ErrorCode.RATE_LIMITED)
+            sessions[sessionId] = TerminalSession(client.id, req.accountId, req.terminalKeyId, expires)
+        }
         return SessionResponse(req.requestId, sessionId, expires, sessionMac(bindingKey, sessionId, req.accountId, expires))
     }
 
@@ -604,6 +612,9 @@ class Hsm(private val clock: () -> Long = System::currentTimeMillis) {
 
     private fun bindingKeyOf(client: Client): HsmKey {
         val id = client.bindingKeyId ?: throw HsmException(ErrorCode.POLICY_DENIED)
+        // The binding key is held to the same allow-list rule as every other key, so a client
+        // cannot be made to sign assertions with a key it was not provisioned to hold.
+        requireClientKey(client, id)
         val k = keys.get(id)
         keys.authorize(k, KeyUsage.TERMINAL_BINDING)
         return k
@@ -657,6 +668,7 @@ class Hsm(private val clock: () -> Long = System::currentTimeMillis) {
 
     companion object {
         const val SESSION_MS = 5 * 60 * 1000L
+        const val MAX_SESSIONS_PER_CLIENT = 64
         const val APPROVAL_MS = 5 * 60 * 1000L
     }
 }
