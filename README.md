@@ -174,6 +174,9 @@ This is a simulator, and the following are knowingly not production-grade:
   TLS and the MAC would be an additional, optional layer.
 - The attempt ledger is in memory and is not replicated. A real deployment needs a durable,
   shared counter, or a restart becomes an attempt-budget reset.
+- `AuditLog.tamperForTest` exists so the tamper-detection tests can model a write-capable
+  insider. It is `internal` and is called by no wire operation, but a production build should
+  compile it out entirely.
 - The audit chain is tamper-*evident*, not tamper-proof: someone with write access can drop
   the tail. Anchoring the head hash externally is what closes that.
 - The 4-digit PIN itself is never made stronger by any of this. The design limits *online*
